@@ -14,8 +14,20 @@ CLANG_PREBUILT_BIN := $(shell \
 ifneq ($(CLANG_PREBUILT_BIN),)
   CLANG_PATH := $(WORKSPACE)/$(CLANG_PREBUILT_BIN)
 else
-  CLANG_PATH := $(shell ls -d $(WORKSPACE)/prebuilts/clang/host/linux-x86/clang-r*/bin \
-    2>/dev/null | sort -V | tail -1)
+  # Newer branches (android16-6.12+) don't set CLANG_PREBUILT_BIN; derive
+  # the path from CLANG_VERSION instead of globbing clang-r*/bin, since the
+  # workspace can hold more than one synced clang version and picking the
+  # highest-numbered one (sort -V | tail -1) can silently diverge from the
+  # clang that actually configured $(KDIR), causing a toolchain mismatch.
+  CLANG_VERSION := $(shell \
+    grep -E "^CLANG_VERSION=" $(WORKSPACE)/common/build.config.constants \
+    2>/dev/null | cut -d= -f2 | head -1)
+  CLANG_PATH := $(shell \
+    if [ -n "$(CLANG_VERSION)" ] && [ -d "$(WORKSPACE)/prebuilts/clang/host/linux-x86/clang-$(CLANG_VERSION)/bin" ]; then \
+      echo "$(WORKSPACE)/prebuilts/clang/host/linux-x86/clang-$(CLANG_VERSION)/bin"; \
+    else \
+      ls -d $(WORKSPACE)/prebuilts/clang/host/linux-x86/clang-r*/bin 2>/dev/null | sort -V | tail -1; \
+    fi)
 endif
 
 CC            := $(CLANG_PATH)/clang
@@ -53,6 +65,7 @@ all:
 	  LLVM_IAS=1 \
 	  KBUILD_EXTRA_SYMBOLS="$(KBUILD_EXTRA_SYMBOLS)" \
 	  EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
+	  KBUILD_MODPOST_WARN=1 \
 		  modules
 	@if [ -x "$(CLANG_PATH)/llvm-strip" ]; then \
 		$(CLANG_PATH)/llvm-strip --strip-debug overclock_mt6855.ko; \
