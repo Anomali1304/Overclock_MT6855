@@ -1,0 +1,132 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'overclock_mt6855.c'
+      - 'Makefile'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - 'overclock_mt6855.c'
+      - 'Makefile'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+env:
+  GKI_MANIFEST_URL: https://android.googlesource.com/kernel/manifest
+  GKI_MANIFEST_BRANCH: common-android16-6.12-lts
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout overclock_mt6855
+        uses: actions/checkout@v4
+        with:
+          path: overclock_mt6855
+
+      - name: Install repo tool
+        run: |
+          curl -sSL https://storage.googleapis.com/git-repo-downloads/repo > /tmp/repo
+          chmod +x /tmp/repo
+          sudo mv /tmp/repo /usr/local/bin/repo
+
+      - name: Sync GKI common kernel
+        run: |
+          mkdir -p ~/OSS && cd ~/OSS
+          git config --global user.email "ci@example.com"
+          git config --global user.name "ci"
+          repo init --no-repo-verify \
+            -u "$GKI_MANIFEST_URL" -b "$GKI_MANIFEST_BRANCH" \
+            --repo-rev=main --depth=1
+          repo sync -j"$(nproc)" --no-tags --no-clone-bundle --current-branch -f
+
+      - name: Find the plain GKI build config
+        id: bconfig
+        run: |
+          cd ~/OSS/common
+          # The plain (non-vendor) GKI aarch64 config name has varied slightly
+          # across branches historically (e.g. build.config.gki.aarch64).
+          # List what this branch actually ships so a failure here is loud
+          # and obvious instead of silently building the wrong target.
+          ls build.config*
+          CANDIDATE=$(ls build.config.gki.aarch64 2>/dev/null || ls build.config.gki_kernel.aarch64 2>/dev/null || true)
+          if [ -z "$CANDIDATE" ]; then
+            echo "::error::Could not find a plain GKI aarch64 build.config in common/. See the build.config* listing above and update this workflow with the correct filename."
+            exit 1
+          fi
+          echo "config=$CANDIDATE" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare kernel tree (modules_prepare, no vmlinux/LTO build)
+        run: |
+          cd ~/OSS/common
+          # Newer branches (android16-6.12+) dropped CLANG_PREBUILT_BIN from
+          # build.config.common and only expose a bare CLANG_VERSION in
+          # build.config.constants. Try the old path first for backward
+          # compat with older branches, then fall back to constructing the
+          # path from CLANG_VERSION, then fall back to a filesystem search.
+          CLANG_PREBUILT_BIN=$(grep -E '^CLANG_PREBUILT_BIN=' build.config.common 2>/dev/null | cut -d= -f2)
+
+          if [ -z "$CLANG_PREBUILT_BIN" ]; then
+            CLANG_VERSION=$(grep -E '^CLANG_VERSION=' build.config.constants 2>/dev/null | cut -d= -f2)
+            echo "No CLANG_PREBUILT_BIN in build.config.common; resolved CLANG_VERSION='$CLANG_VERSION' from build.config.constants"
+            if [ -n "$CLANG_VERSION" ] && [ -d "$HOME/OSS/prebuilts/clang/host/linux-x86/clang-$CLANG_VERSION/bin" ]; then
+              CLANG_PREBUILT_BIN="prebuilts/clang/host/linux-x86/clang-$CLANG_VERSION/bin"
+            fi
+          fi
+
+          if [ -z "$CLANG_PREBUILT_BIN" ] || [ ! -d "$HOME/OSS/$CLANG_PREBUILT_BIN" ]; then
+            echo "Falling back to filesystem search for a synced clang toolchain..."
+            FOUND=$(find "$HOME/OSS" -maxdepth 6 -type d -iname "clang-r*" 2>/dev/null | head -1)
+            if [ -n "$FOUND" ] && [ -x "$FOUND/bin/clang" ]; then
+              CLANG_PREBUILT_BIN="${FOUND#$HOME/OSS/}/bin"
+            fi
+          fi
+
+          echo "Resolved CLANG_PREBUILT_BIN: '$CLANG_PREBUILT_BIN'"
+          if [ -z "$CLANG_PREBUILT_BIN" ] || [ ! -x "$HOME/OSS/$CLANG_PREBUILT_BIN/clang" ]; then
+            echo "::error::Could not locate a synced clang toolchain under ~/OSS."
+            echo "build.config.common (clang-related lines):"; grep -i clang build.config.common || true
+            echo "build.config.constants:"; cat build.config.constants || true
+            echo "Directories under ~/OSS matching clang-r*:"
+            find "$HOME/OSS" -maxdepth 6 -iname "clang-r*" 2>/dev/null || true
+            exit 1
+          fi
+          export PATH="$HOME/OSS/$CLANG_PREBUILT_BIN:$PATH"
+          echo "Using clang: $(which clang)"
+          clang --version
+          MAKE_TOOLCHAIN_ARGS="ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1"
+          # gki_defconfig is the standard GKI aarch64 defconfig target name.
+          # If this branch names it differently, list what's available so the
+          # failure is loud and obvious instead of silently building nothing.
+          # No O=out: our own Makefile expects KDIR itself to be the built
+          # tree (.config, Module.symvers, include/generated all in-tree).
+          if ! make $MAKE_TOOLCHAIN_ARGS gki_defconfig; then
+            echo "::error::gki_defconfig target not found. Available configs:"
+            ls arch/arm64/configs/
+            exit 1
+          fi
+          make $MAKE_TOOLCHAIN_ARGS -j"$(nproc)" modules_prepare
+
+      - name: check-clang
+        working-directory: overclock_mt6855
+        run: make check-clang WORKSPACE="$HOME/OSS" KDIR="$HOME/OSS/common"
+
+      - name: Build module
+        working-directory: overclock_mt6855
+        run: make WORKSPACE="$HOME/OSS" KDIR="$HOME/OSS/common"
+
+      - name: Verify output
+        working-directory: overclock_mt6855
+        run: |
+          test -f overclock_mt6855.ko
+          ls -lh overclock_mt6855.ko
+          strings overclock_mt6855.ko | grep '^vermagic='
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: overclock_mt6855.ko
+          path: overclock_mt6855/overclock_mt6855.ko
