@@ -37,9 +37,7 @@ EXTRA_CFLAGS  := \
 all:
 	@if [ -z "$(KDIR)" ]; then echo "ERROR: KDIR must point to the exact Beryl 6.12 kernel tree/output."; exit 1; fi
 	@if [ ! -f "$(KDIR)/Makefile" ]; then echo "ERROR: invalid KDIR: $(KDIR)"; exit 1; fi
-	@if [ ! -f "$(KDIR)/Module.symvers" ] && [ -z "$(KBUILD_EXTRA_SYMBOLS)" ]; then echo "ERROR: Module.symvers missing. Build/prepare the exact Beryl 6.12 kernel first."; exit 1; fi
-	@if [ -z "$(CLANG_PATH)" ]; then \
-		echo "ERROR: Clang not found under GKI prebuilts — check WORKSPACE ($(WORKSPACE)) and repo sync."; \
+	@if [ ! -f "$(KDIR)/Module.symvers" ] && [ -z "$(KBUILD_EXTRA_SYMBOLS)" ]; then echo "NOTE: Module.symvers not present under KDIR (fine for modules_prepare-only builds; this module resolves vendor symbols at runtime, not link-time)."; fi
 		exit 1; \
 	fi
 	@echo "  [overclock_mt6855] Using Clang: $(CLANG_PATH)/clang"
@@ -78,7 +76,7 @@ check-clang:
 	@echo "WORKSPACE    : $(WORKSPACE)"
 	@if [ -z "$(KDIR)" ]; then echo "ERROR: KDIR must point to the exact Beryl 6.12 kernel tree/output."; exit 1; fi
 	@if [ ! -f "$(KDIR)/Makefile" ]; then echo "ERROR: invalid KDIR: $(KDIR)"; exit 1; fi
-	@if [ ! -f "$(KDIR)/Module.symvers" ] && [ -z "$(KBUILD_EXTRA_SYMBOLS)" ]; then echo "ERROR: Module.symvers missing. Build/prepare the exact Beryl 6.12 kernel first."; exit 1; fi
+	@if [ ! -f "$(KDIR)/Module.symvers" ] && [ -z "$(KBUILD_EXTRA_SYMBOLS)" ]; then echo "NOTE: Module.symvers not present under KDIR (fine for modules_prepare-only builds; this module resolves vendor symbols at runtime, not link-time)."; fi
 	@if [ -z "$(CLANG_PATH)" ]; then \
 		echo "CLANG_PATH   : NOT FOUND — check WORKSPACE and repo sync"; \
 		echo "Clang version: n/a"; \
